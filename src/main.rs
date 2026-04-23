@@ -4,20 +4,26 @@
 extern crate alloc;
 
 slint::include_modules!();
+use bevy::prelude::*;
 
-// use esp_alloc::heap_allocator;
-
-// #[cfg(not(feature = "simulator"))]
-// #[hal::entry]
+#[cfg(feature = "simulator")]
+use libc_print::std_name::println;
 
 #[cfg(not(feature = "simulator"))]
 use {
     esp_alloc::heap_allocator,
     esp_backtrace as _,
+    esp_println as _
 };
+
+fn hello_world() {
+    println!("hello world!");
+}
 
 #[cfg(feature = "simulator")]
 fn main() -> Result<(), slint::PlatformError> {
+    App::new().add_systems(Update, hello_world).run();
+
     let _ = MainWindow::new().expect("Failed to load UI").run();
     panic!("The event loop should not return");
 }
@@ -27,6 +33,9 @@ fn main() -> Result<(), slint::PlatformError> {
 fn main() -> ! {
     heap_allocator!(size: 64 * 1024);
 
+    App::new().add_systems(Update, hello_world).run();
+
     let _ = MainWindow::new().expect("Failed to load UI").run();
     panic!("The event loop should not return");
 }
+
