@@ -6,15 +6,23 @@ extern crate alloc;
 slint::include_modules!();
 use bevy::prelude::*;
 
+
 #[cfg(feature = "simulator")]
-use libc_print::std_name::println;
+use { 
+    libc_print::std_name::*
+};
 
 #[cfg(not(feature = "simulator"))]
 use {
     esp_alloc::heap_allocator,
-    esp_backtrace as _,
-    esp_println as _
+    esp_println::println
 };
+
+#[cfg(not(feature = "simulator"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
 
 fn hello_world() {
     println!("hello world!");
