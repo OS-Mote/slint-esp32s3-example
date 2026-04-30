@@ -1,5 +1,5 @@
 #![no_std]
-#![cfg_attr(not(feature = "simulator"), no_main)]
+#![no_main]
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -7,20 +7,10 @@ extern crate alloc;
 
 slint::include_modules!();
 
-#[cfg(not(feature = "simulator"))]
-// use core::convert::Infallible;
-
 use bevy::app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin};
 use bevy::prelude::Update;
 use bevy::time::TimePlugin;
 use bevy_ecs::prelude::*;
-
-#[cfg(feature = "simulator")]
-use { 
-    libc_print::std_name::*
-};
-
-#[cfg(not(feature = "simulator"))]
 use {
     esp_backtrace as _,
     esp_alloc::heap_allocator,
@@ -72,23 +62,6 @@ use {
     }
 };
 
-
-
-#[cfg(not(feature = "simulator"))]
-
-fn hello_world() {
-    println!("hello world!");
-}
-
-#[cfg(feature = "simulator")]
-fn main() -> Result<(), slint::PlatformError> {
-    App::new().add_systems(Update, hello_world).run();
-
-    let _ = MainWindow::new().expect("Failed to load UI").run();
-    panic!("The event loop should not return");
-}
-
-#[cfg(not(feature = "simulator"))]
 struct SlintPlatform {
     window: alloc::rc::Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
 }
@@ -112,7 +85,6 @@ impl slint::platform::Platform for SlintPlatform {
     }
 }
 
-#[cfg(not(feature = "simulator"))]
 #[esp_hal::main]
 fn main() -> ! {
     esp_alloc::heap_allocator!(size: 64000);
