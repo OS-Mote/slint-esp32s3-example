@@ -1,5 +1,4 @@
 fn main() {
-    slint_build::print_rustc_flags().unwrap();
     slint_build::compile_with_config(
         "ui/app-window.slint",
         slint_build::CompilerConfiguration::new()
