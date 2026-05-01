@@ -100,7 +100,6 @@ type Display = mipidsi::Display<
     NoResetPin,
 >;
 
-// #[derive(Resource)]
 struct DisplayResource {
     display: Display,
     buffer: alloc::boxed::Box<[slint::platform::software_renderer::Rgb565Pixel; DISPLAY_HORIZONTAL_RESOLUTION]>
