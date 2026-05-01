@@ -5,89 +5,149 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 extern crate alloc;
 
-slint::include_modules!();
-
-use bevy::app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin};
-use bevy::prelude::Update;
-use bevy::time::TimePlugin;
+use bevy::{
+    app::App,
+    prelude::Update
+};
+use bevy_platform::time::Instant;
 use bevy_ecs::prelude::*;
-use {
-    esp_backtrace as _,
-    esp_alloc::heap_allocator,
-    esp_println::println,
-    embedded_hal_bus::spi::{
-        ExclusiveDevice,
+use slint::platform::software_renderer::MinimalSoftwareWindow;
+use esp_backtrace as _;
+use esp_alloc::heap_allocator;
+use esp_println::println;
+use embedded_hal_bus::spi::ExclusiveDevice;
+use esp_hal::{
+    Blocking,
+    delay::Delay,
+    gpio::{ 
+        Level,
+        Output, 
+        OutputConfig,
     },
-    embedded_hal::{
-        digital::OutputPin,
-    },
-    esp_hal::{
-        delay::Delay,
-        gpio::{ 
-            Level,
-            Output, 
-            OutputConfig,
-        },
-        rtc_cntl::{
-            Rtc, 
-            sleep::{
-                RtcSleepConfig,
-                GpioWakeupSource,
-                WakeSource,
-                WakeTriggers
-            }
-        },
-        time::Rate,
-        spi::{
-            master::{ 
-                Config, 
-                Spi
-            }
+    rtc_cntl::{
+        Rtc, 
+        sleep::{
+            RtcSleepConfig,
+            GpioWakeupSource,
+            WakeSource,
+            WakeTriggers
         }
     },
-    mipidsi::{ 
-        interface::{
-            SpiInterface,
-        },
-        models::ST7789, 
-        options::{
-            ColorInversion,
-            Rotation,
-            Orientation
+    time::Rate,
+    spi::{
+        master::{ 
+            Config, 
+            Spi,
+            SpiDmaBus
         }
     },
-    embedded_graphics::{
-        prelude::*,
-        pixelcolor::Rgb565
+    dma::{
+        DmaRxBuf, 
+        DmaTxBuf
+    },
+    dma_buffers
+};
+use mipidsi::{ 
+    NoResetPin, interface::SpiInterface, models::ST7789, options::{
+        ColorInversion, Orientation, Rotation
     }
 };
+use embedded_graphics::{
+    prelude::*,
+    pixelcolor::Rgb565
+};
 
-struct SlintPlatform {
+const DISPLAY_HORIZONTAL_RESOLUTION: usize = 320;
+const DISPLAY_VERTICAL_RESOLUTION: usize = 240;
+const DISPLAY_BUFFER_SIZE: usize = DISPLAY_HORIZONTAL_RESOLUTION * DISPLAY_VERTICAL_RESOLUTION;
+
+struct Platform {
     window: alloc::rc::Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
 }
 
-impl slint::platform::Platform for SlintPlatform {
-    fn create_window_adapter(
-        &self,
-    ) -> Result<alloc::rc::Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError>
-    {
+impl slint::platform::Platform for Platform {
+    fn create_window_adapter(&self) -> Result<alloc::rc::Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
         Ok(self.window.clone())
     }
-
     fn duration_since_start(&self) -> core::time::Duration {
         core::time::Duration::from_millis(
             esp_hal::time::Instant::now().duration_since_epoch().as_millis()
         ) 
     }
+}
 
-    fn debug_log(&self, arguments: core::fmt::Arguments) {
-        esp_println::println!("{}", arguments);
+struct WindowResource {
+    window: alloc::rc::Rc<MinimalSoftwareWindow>,
+}
+
+impl WindowResource {
+    fn new() -> Self {
+        let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
+    
+        window.set_size(slint::PhysicalSize::new(DISPLAY_HORIZONTAL_RESOLUTION as u32, DISPLAY_VERTICAL_RESOLUTION as u32));
+
+        WindowResource { window }
     }
 }
 
+type Display = mipidsi::Display<
+    SpiInterface<
+        'static,
+        ExclusiveDevice<SpiDmaBus<'static, Blocking>, Output<'static>, Delay>,
+        Output<'static>,
+    >,
+    ST7789,
+    NoResetPin,
+>;
+
+// #[derive(Resource)]
+struct DisplayResource {
+    display: Display,
+    buffer: alloc::boxed::Box<[slint::platform::software_renderer::Rgb565Pixel; DISPLAY_HORIZONTAL_RESOLUTION]>
+}
+
+impl slint::platform::software_renderer::LineBufferProvider for &mut DisplayResource {
+    type TargetPixel = slint::platform::software_renderer::Rgb565Pixel;
+
+    fn process_line(
+        &mut self,
+        line: usize,
+        range: core::ops::Range<usize>,
+        render_fn: impl FnOnce(&mut [slint::platform::software_renderer::Rgb565Pixel]),
+    ) {
+        let rect = embedded_graphics_core::primitives::Rectangle::new(
+            Point::new(range.start as _, line as _),
+            Size::new(range.len() as _, 1),
+        );
+        
+        render_fn(&mut self.buffer[range.clone()]);
+
+        self.display
+            .fill_contiguous(
+                &rect,
+                self.buffer[range.clone()].iter().map(|p| {
+                    embedded_graphics_core::pixelcolor::raw::RawU16::new(p.0).into()
+                }),
+            )
+            .map_err(drop)
+            .unwrap();
+    }
+}
+
+fn render_system(
+    window_resource: NonSendMut<WindowResource>,
+    display_resource: NonSendMut<DisplayResource>
+) {
+    window_resource.window.draw_if_needed(|renderer| {
+        renderer.render_by_line(display_resource.into_inner());
+    });
+}
+
+slint::include_modules!();
+
 #[esp_hal::main]
 fn main() -> ! {
-    esp_alloc::heap_allocator!(size: 64000);
+    esp_alloc::heap_allocator!(size: 1024*32);
     
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
@@ -106,56 +166,42 @@ fn main() -> ! {
     
     tft_enable.set_high();
     
-    let spi = Spi::new(peripherals.SPI2, Config::default().with_frequency(Rate::from_mhz(40)))
-    .unwrap()
-    .with_sck(tft_sck)
-    .with_mosi(tft_mosi);
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(8912);
+    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
 
-    let mut buffer = [0u8; 512];
-
+    let spi = Spi::<Blocking>::new(
+        peripherals.SPI2, 
+        Config::default()
+            .with_frequency(Rate::from_mhz(40))
+            .with_mode(esp_hal::spi::Mode::_0)
+    )
+        .unwrap()
+        .with_sck(tft_sck)
+        .with_mosi(tft_mosi)
+        .with_dma(peripherals.DMA_CH0)
+        .with_buffers(dma_rx_buf, dma_tx_buf);
     let spi_delay = Delay::new();
-    let spi_device = ExclusiveDevice::new(spi, tft_cs, spi_delay).unwrap();
-    let di = SpiInterface::new(spi_device, tft_dc, &mut buffer);
-    
-    let mut display_delay = Delay::new();
-    
-    let mut display = mipidsi::Builder::new(ST7789, di)
-        .display_size(240, 320)
+    let spi_device: ExclusiveDevice<_, _, Delay> = ExclusiveDevice::new(spi, tft_cs, spi_delay).unwrap();
+    let spi_buffer: &mut [u8; 512] = alloc::boxed::Box::leak(alloc::boxed::Box::new([0_u8; 512]));
+    let spi_interface = SpiInterface::new(spi_device, tft_dc, spi_buffer);
+    let mut display: Display = mipidsi::Builder::new(ST7789, spi_interface)
+        .display_size(DISPLAY_VERTICAL_RESOLUTION as u16, DISPLAY_HORIZONTAL_RESOLUTION as u16)
         .invert_colors(ColorInversion::Inverted)
-        .init(&mut display_delay)
+        .orientation(Orientation::default().rotate(Rotation::Deg90))
+        .init(&mut Delay::new())
         .unwrap();
-
-    display.set_orientation(Orientation::default().rotate(Rotation::Deg90)).unwrap();
 
     display.clear(Rgb565::BLUE).unwrap();
 
-    let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
-    
-    window.set_size(slint::PhysicalSize::new(320, 240));
-    
-    slint::platform::set_platform(alloc::boxed::Box::new(MyPlatform {
-        window: window.clone()
+    let window_resource = WindowResource::new();
+
+    slint::platform::set_platform(alloc::boxed::Box::new(Platform {
+        window: window_resource.window.clone()
     }))
     .unwrap();
 
-    struct MyPlatform {
-        window: alloc::rc::Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
-    }
-
-    impl slint::platform::Platform for MyPlatform {
-        fn create_window_adapter(&self) -> Result<alloc::rc::Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
-            Ok(self.window.clone())
-        }
-        fn duration_since_start(&self) -> core::time::Duration {
-            core::time::Duration::from_millis(
-                esp_hal::time::Instant::now().duration_since_epoch().as_millis()
-            ) 
-        }
-    }
-
-    let main_window = MainWindow::new().unwrap();
-
-    let mut line = [slint::platform::software_renderer::Rgb565Pixel(0); 320];
+    let _main_window = MainWindow::new().unwrap();
 
     // let mut wake_input = Input::new(peripherals.GPIO0, InputConfig::default());
 
@@ -169,50 +215,29 @@ fn main() -> ! {
 
     // rtc.sleep_light(&[&wake_source]);
 
+    fn elapsed_time() -> core::time::Duration {
+        core::time::Duration::from_millis(
+            esp_hal::time::Instant::now().duration_since_epoch().as_millis()
+        )
+    }
+
+    unsafe { Instant::set_elapsed(elapsed_time) };
+
+    let mut app = App::new();
+
+    app
+        .insert_non_send_resource(window_resource)
+        .insert_non_send_resource(DisplayResource { display: display, buffer: alloc::boxed::Box::new([slint::platform::software_renderer::Rgb565Pixel(0); DISPLAY_HORIZONTAL_RESOLUTION]) })
+        .add_systems(Update, render_system);
+
+    let loop_delay = Delay::new();
+    
     loop {
         slint::platform::update_timers_and_animations();
 
-        window.draw_if_needed(|renderer| {
-            use embedded_graphics_core::prelude::*;
-            struct DisplayWrapper<'a, T>(
-                &'a mut T,
-                &'a mut [slint::platform::software_renderer::Rgb565Pixel],
-            );
-            impl<T: DrawTarget<Color = embedded_graphics_core::pixelcolor::Rgb565>>
-                slint::platform::software_renderer::LineBufferProvider for DisplayWrapper<'_, T>
-            {
-                type TargetPixel = slint::platform::software_renderer::Rgb565Pixel;
-                fn process_line(
-                    &mut self,
-                    line: usize,
-                    range: core::ops::Range<usize>,
-                    render_fn: impl FnOnce(&mut [Self::TargetPixel]),
-                ) {
-                    let rect = embedded_graphics_core::primitives::Rectangle::new(
-                        Point::new(range.start as _, line as _),
-                        Size::new(range.len() as _, 1),
-                    );
-                    render_fn(&mut self.1[range.clone()]);
-                    // NOTE! this is not an efficient way to send pixel to the screen, but it is kept simple on this template.
-                    // It would be much faster to use the DMA to send pixel in parallel.
-                    // See the example in https://github.com/slint-ui/slint/blob/master/examples/mcu-board-support/pico_st7789.rs 
-                    self.0
-                        .fill_contiguous(
-                            &rect,
-                            self.1[range.clone()].iter().map(|p| {
-                                embedded_graphics_core::pixelcolor::raw::RawU16::new(p.0).into()
-                            }),
-                        )
-                        .map_err(drop)
-                        .unwrap();
-                }
-            }
-            renderer.render_by_line(DisplayWrapper(&mut display, &mut line));
-        });
-
-        if window.has_active_animations() {
-            continue;
-        }
+        app.update();
+        
+        loop_delay.delay_millis(50u32);
     }
 
     panic!("The event loop should not return");
