@@ -21,11 +21,11 @@ use esp_hal::{
     delay::Delay,
     gpio::{ 
         Level,
-        Output, 
+        Output,
         OutputConfig,
     },
     rtc_cntl::{
-        Rtc, 
+        Rtc,
         sleep::{
             RtcSleepConfig,
             GpioWakeupSource,
@@ -36,20 +36,25 @@ use esp_hal::{
     time::Rate,
     spi::{
         master::{ 
-            Config, 
+            Config,
             Spi,
             SpiDmaBus
         }
     },
     dma::{
-        DmaRxBuf, 
+        DmaRxBuf,
         DmaTxBuf
     },
     dma_buffers
 };
 use mipidsi::{ 
-    NoResetPin, interface::SpiInterface, models::ST7789, options::{
-        ColorInversion, Orientation, Rotation
+    NoResetPin,
+    interface::SpiInterface,
+    models::ST7789,
+    options::{
+        ColorInversion,
+        Orientation,
+        Rotation
     }
 };
 use embedded_graphics::{
